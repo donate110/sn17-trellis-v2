@@ -61,12 +61,19 @@ async def generate_from_base64(request: GenerateRequest) -> GenerateResponse:
 
         compressed_ply_bytes = None
 
-        # compress the ply file 
-        if result.ply_file_base64 and settings.compression:
-            compressed_ply_bytes = pyspz.compress(result.ply_file_base64, workers=1) # returns bytes
+        # Ensure ply_file_base64 is bytes for compression
+        ply_bytes = result.ply_file_base64
+        if isinstance(ply_bytes, str):
+            # If it's already a base64 string, decode it first
+            ply_bytes = base64.b64decode(ply_bytes)
+        
+        # compress the ply file if enabled
+        if ply_bytes and settings.compression:
+            compressed_ply_bytes = pyspz.compress(ply_bytes, workers=1)  # returns bytes
             logger.info(f"Compressed PLY size: {len(compressed_ply_bytes)} bytes")
         
-        result.ply_file_base64 = base64.b64encode(result.ply_file_base64 if not compressed_ply_bytes else compressed_ply_bytes).decode("utf-8") # return bytes
+        # Encode to base64 string for JSON response
+        result.ply_file_base64 = base64.b64encode(compressed_ply_bytes if compressed_ply_bytes else ply_bytes).decode("utf-8")
 
         return result
 
@@ -84,8 +91,13 @@ async def generate(prompt_image_file: UploadFile = File(...), seed: int = Form(-
     try:
         logger.info(f"Task received. Uploading image: {prompt_image_file.filename}")
 
+        # Read and validate uploaded file
+        image_bytes = await prompt_image_file.read()
+        if not image_bytes or len(image_bytes) == 0:
+            raise HTTPException(status_code=400, detail="Empty image file provided")
+        
         # Generate PLY from uploaded file
-        ply_bytes = await pipeline.generate_from_upload(await prompt_image_file.read(), seed)
+        ply_bytes = await pipeline.generate_from_upload(image_bytes, seed)
 
         # Wrap bytes in BytesIO for streaming
         ply_buffer = BytesIO(ply_bytes)
@@ -110,17 +122,22 @@ async def generate(prompt_image_file: UploadFile = File(...), seed: int = Form(-
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 @app.post("/generate-spz")
-async def generate(prompt_image_file: UploadFile = File(...), seed: int = Form(-1)) -> StreamingResponse:
+async def generate_spz(prompt_image_file: UploadFile = File(...), seed: int = Form(-1)) -> StreamingResponse:
     """
     Upload image file and generate 3D model as SPZ buffer.
     
-    Returns binary SPZ file directly.s
+    Returns binary SPZ file directly.
     """
     try:
         logger.info(f"Task received (SPZ). Uploading image: {prompt_image_file.filename}")
         
+        # Read and validate uploaded file
+        image_bytes = await prompt_image_file.read()
+        if not image_bytes or len(image_bytes) == 0:
+            raise HTTPException(status_code=400, detail="Empty image file provided")
+        
         # Generate PLY from uploaded file
-        ply_bytes = await pipeline.generate_from_upload(await prompt_image_file.read(), seed)
+        ply_bytes = await pipeline.generate_from_upload(image_bytes, seed)
 
         # Compress the ply file 
         if ply_bytes:

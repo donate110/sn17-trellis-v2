@@ -77,10 +77,25 @@ class GenerationPipeline:
         
         Args:
             image_bytes: Raw image bytes from uploaded file
+            seed: Random seed for generation
             
         Returns:
             PLY file as bytes
         """
+        # Validate input image
+        try:
+            image = Image.open(io.BytesIO(image_bytes))
+            image.verify()  # Verify it's a valid image
+            image = Image.open(io.BytesIO(image_bytes)).convert("RGB")  # Reopen after verify
+        except Exception as e:
+            logger.error(f"Invalid image format: {e}")
+            raise ValueError(f"Invalid image format: {e}")
+        
+        # Check minimum image size
+        min_size = 256
+        if image.width < min_size or image.height < min_size:
+            logger.warning(f"Image size ({image.width}x{image.height}) is below recommended minimum ({min_size}x{min_size})")
+        
         # Encode to base64
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")
         
@@ -94,11 +109,18 @@ class GenerationPipeline:
         # Generate
         response = await self.generate_gs(request)
         
-        # Return binary PLY
+        # Return binary PLY - ensure it's bytes
         if not response.ply_file_base64:
             raise ValueError("PLY generation failed")
-            
-        return response.ply_file_base64 # bytes
+        
+        # Handle both bytes and base64 string cases
+        if isinstance(response.ply_file_base64, bytes):
+            return response.ply_file_base64
+        elif isinstance(response.ply_file_base64, str):
+            # If it's a base64 string, decode it
+            return base64.b64decode(response.ply_file_base64)
+        else:
+            raise ValueError(f"Unexpected PLY file type: {type(response.ply_file_base64)}")
 
     async def generate_gs(self, request: GenerateRequest) -> GenerateResponse:
         """
@@ -122,12 +144,27 @@ class GenerationPipeline:
 
         # Decode input image
         image = decode_image(request.prompt_image)
+        
+        # Validate input image quality
+        if image.width < 64 or image.height < 64:
+            raise ValueError(f"Image too small: {image.width}x{image.height}. Minimum size is 64x64")
+        if image.width > 4096 or image.height > 4096:
+            logger.warning(f"Image very large: {image.width}x{image.height}. This may cause memory issues.")
 
         # 1. Edit the image using Qwen Edit
         image_edited = self.qwen_edit.edit_image(prompt_image=image, seed=request.seed)
+        
+        # Validate edited image
+        if not image_edited or image_edited.size[0] == 0 or image_edited.size[1] == 0:
+            raise ValueError("Image editing failed: invalid output image")
 
         # 2. Remove background
         image_without_background = self.rmbg.remove_background(image_edited)
+        
+        # Validate background-removed image
+        if not image_without_background or image_without_background.size[0] == 0 or image_without_background.size[1] == 0:
+            logger.warning("Background removal produced invalid image, using edited image instead")
+            image_without_background = image_edited
 
         trellis_result: Optional[TrellisResult] = None
         
@@ -135,6 +172,15 @@ class GenerationPipeline:
         trellis_params: TrellisParams = request.trellis_params
        
         # 3. Generate the 3D model
+        # Ensure image is in RGB format and has valid dimensions
+        if image_without_background.mode != "RGB":
+            image_without_background = image_without_background.convert("RGB")
+        
+        # Validate image before 3D generation
+        min_3d_size = 256
+        if image_without_background.width < min_3d_size or image_without_background.height < min_3d_size:
+            logger.warning(f"Image size ({image_without_background.width}x{image_without_background.height}) is below recommended minimum for 3D generation ({min_3d_size}x{min_3d_size})")
+        
         trellis_result = self.trellis.generate(
             TrellisRequest(
                 image=image_without_background,
@@ -142,6 +188,10 @@ class GenerationPipeline:
                 params=trellis_params
             )
         )
+        
+        # Validate 3D generation result
+        if not trellis_result or not trellis_result.ply_file:
+            raise ValueError("3D model generation failed: no PLY file produced")
 
         # Save generated files
         if self.settings.save_generated_files:

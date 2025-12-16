@@ -36,6 +36,7 @@ class QwenEditModule(QwenManager):
 
     def __init__(self, settings: Settings):
         super().__init__(settings)
+        self.settings = settings  # Store settings for use in _prepare_input_image
         self._empty_image = Image.new('RGB', (1024, 1024))
 
         self.base_model_path = settings.qwen_edit_base_model_path
@@ -108,12 +109,32 @@ class QwenEditModule(QwenManager):
                 "use_karras_sigmas": False,
             }
 
-    def _prepare_input_image(self, image: Image, megapixels: float = 1.0):
+    def _prepare_input_image(self, image: Image, megapixels: Optional[float] = None):
+        """
+        Prepare input image with proper scaling while preserving aspect ratio.
+        
+        Args:
+            image: Input PIL Image
+            megapixels: Target megapixels (uses settings default if None)
+            
+        Returns:
+            Resized image with preserved aspect ratio
+        """
+        if megapixels is None:
+            megapixels = self.settings.qwen_edit_megapixels
+        
         total = int(megapixels * 1024 * 1024)
 
         scale_by = math.sqrt(total / (image.width * image.height))
         width = round(image.width * scale_by)
         height = round(image.height * scale_by)
+        
+        # Ensure minimum dimensions
+        min_dim = 256
+        if width < min_dim or height < min_dim:
+            scale_by = max(min_dim / image.width, min_dim / image.height)
+            width = round(image.width * scale_by)
+            height = round(image.height * scale_by)
 
         return image.resize((width, height), Image.Resampling.LANCZOS)
 

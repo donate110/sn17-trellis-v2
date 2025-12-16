@@ -23,6 +23,7 @@ class BackgroundRemovalService:
         self.padding_percentage = self.settings.padding_percentage
         self.output_size = self.settings.output_image_size
         self.limit_padding = self.settings.limit_padding
+        self.mask_threshold = self.settings.background_mask_threshold
 
         # Set device
         self.device = f"cuda:{settings.qwen_gpu}" if torch.cuda.is_available() else "cpu"
@@ -124,8 +125,8 @@ class BackgroundRemovalService:
             # Reshape and quantize mask values: (1, 1, H, W) -> (1, H, W) -> (H, W)
             mask = preds[0].squeeze().mul_(255).int().div(255).float()
 
-        # Get bounding box indices
-        bbox_indices = torch.argwhere(mask > 0.8)
+        # Get bounding box indices using configurable threshold
+        bbox_indices = torch.argwhere(mask > self.mask_threshold)
         if len(bbox_indices) == 0:
             crop_args = dict(top = 0, left = 0, height = mask.shape[1], width = mask.shape[0])
         else:
