@@ -252,20 +252,12 @@ class GenerationPipeline:
         # Decode input image
         image = decode_image(request.prompt_image)
         
-<<<<<<< HEAD
         # Validate input image quality
         if image.width < 64 or image.height < 64:
             raise ValueError(f"Image too small: {image.width}x{image.height}. Minimum size is 64x64")
         if image.width > 4096 or image.height > 4096:
             logger.warning(f"Image very large: {image.width}x{image.height}. This may cause memory issues.")
 
-        # 1. Edit the image using Qwen Edit
-        image_edited = self.qwen_edit.edit_image(prompt_image=image, seed=request.seed)
-        
-        # Validate edited image
-        if not image_edited or image_edited.size[0] == 0 or image_edited.size[1] == 0:
-            raise ValueError("Image editing failed: invalid output image")
-=======
         # Preprocess input image for better editing quality
         if self.settings.enable_image_preprocessing:
             image = preprocess_input_image(image)
@@ -277,7 +269,10 @@ class GenerationPipeline:
             max_retries=self.settings.edit_max_retries,
             quality_threshold=self.settings.edit_quality_threshold
         )
->>>>>>> fcfbafc (edit-retry-logic)
+        
+        # Validate edited image
+        if not image_edited or image_edited.size[0] == 0 or image_edited.size[1] == 0:
+            raise ValueError("Image editing failed: invalid output image")
 
         # 2. Remove background
         image_without_background = self.rmbg.remove_background(image_edited)
