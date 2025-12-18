@@ -17,7 +17,15 @@ from schemas import GenerateRequest, GenerateResponse, TrellisParams, TrellisReq
 from modules.image_edit.qwen_edit_module import QwenEditModule
 from modules.background_removal.rmbg_manager import BackgroundRemovalService
 from modules.gs_generator.trellis_manager import TrellisService
-from modules.utils import secure_randint, set_random_seed, decode_image, to_png_base64, save_files
+from modules.utils import (
+    secure_randint, 
+    set_random_seed, 
+    decode_image, 
+    to_png_base64, 
+    save_files,
+    validate_image_quality,
+    preprocess_input_image
+)
 
 
 class GenerationPipeline:
@@ -61,6 +69,105 @@ class GenerationPipeline:
         """
         gc.collect()
         torch.cuda.empty_cache()
+
+    async def _edit_image_with_retry(
+        self, 
+        image: Image.Image, 
+        base_seed: int,
+        max_retries: int = 3,
+        quality_threshold: float = 0.7
+    ) -> Image.Image:
+        """
+        Edit image with retry logic to ensure quality.
+        
+        Args:
+            image: Input image to edit
+            base_seed: Base seed for generation
+            max_retries: Maximum number of retry attempts
+            quality_threshold: Minimum quality score threshold (0-1)
+            
+        Returns:
+            Edited image that passes quality checks
+        """
+        best_image = None
+        best_quality_score = 0.0
+        last_exception = None
+        
+        for attempt in range(max_retries):
+            try:
+                # Use slightly different seed for each retry to get variation
+                retry_seed = base_seed + attempt * 17  # Use prime number for better variation
+                set_random_seed(retry_seed)
+                
+                logger.info(f"Editing image (attempt {attempt + 1}/{max_retries}, seed: {retry_seed})")
+                
+                # Edit the image
+                image_edited = self.qwen_edit.edit_image(prompt_image=image, seed=retry_seed)
+                
+                # Validate quality
+                is_valid, quality_metrics = validate_image_quality(image_edited, reference_image=image)
+                
+                # Calculate quality score (higher is better)
+                # Combine multiple metrics into a single score
+                variance_score = 1.0 - min(quality_metrics.get("variance", 0) / 10000, 1.0)
+                extreme_pixel_score = 1.0 - min(quality_metrics.get("extreme_pixel_ratio", 0) * 10, 1.0)
+                local_var_score = min(quality_metrics.get("avg_local_variance", 0) / 100, 1.0)
+                
+                quality_score = (variance_score * 0.4 + extreme_pixel_score * 0.3 + local_var_score * 0.3)
+                
+                logger.info(
+                    f"Image quality check (attempt {attempt + 1}): "
+                    f"valid={is_valid}, score={quality_score:.3f}, "
+                    f"variance={quality_metrics.get('variance', 0):.1f}, "
+                    f"issues={quality_metrics.get('issues', [])}"
+                )
+                
+                # Track best result
+                if quality_score > best_quality_score:
+                    best_quality_score = quality_score
+                    best_image = image_edited
+                
+                # If quality is acceptable, return immediately
+                if is_valid and quality_score >= quality_threshold:
+                    logger.success(f"Image editing successful on attempt {attempt + 1} with quality score {quality_score:.3f}")
+                    return image_edited
+                
+                # If this is the last attempt, return best result
+                if attempt == max_retries - 1:
+                    if best_image is not None:
+                        logger.warning(
+                            f"Using best result after {max_retries} attempts "
+                            f"(quality score: {best_quality_score:.3f})"
+                        )
+                        return best_image
+                    else:
+                        # Fallback: return the last attempt even if quality is poor
+                        logger.warning(f"Returning last attempt result despite quality issues")
+                        return image_edited
+                
+            except Exception as e:
+                last_exception = e
+                logger.warning(f"Error during image editing (attempt {attempt + 1}/{max_retries}): {e}")
+                
+                # If this is the last attempt, raise the exception
+                if attempt == max_retries - 1:
+                    if best_image is not None:
+                        logger.warning("Returning best result from previous attempts despite error")
+                        return best_image
+                    raise e
+                
+                # Clean GPU memory before retry
+                self._clean_gpu_memory()
+        
+        # Should not reach here, but return best image if available
+        if best_image is not None:
+            return best_image
+        
+        # Final fallback: raise last exception or return original
+        if last_exception:
+            raise last_exception
+        
+        raise RuntimeError("Failed to edit image after all retry attempts")
 
     async def warmup_generator(self) -> None:
         """Function for warming up the generator"""
@@ -145,6 +252,7 @@ class GenerationPipeline:
         # Decode input image
         image = decode_image(request.prompt_image)
         
+<<<<<<< HEAD
         # Validate input image quality
         if image.width < 64 or image.height < 64:
             raise ValueError(f"Image too small: {image.width}x{image.height}. Minimum size is 64x64")
@@ -157,6 +265,19 @@ class GenerationPipeline:
         # Validate edited image
         if not image_edited or image_edited.size[0] == 0 or image_edited.size[1] == 0:
             raise ValueError("Image editing failed: invalid output image")
+=======
+        # Preprocess input image for better editing quality
+        if self.settings.enable_image_preprocessing:
+            image = preprocess_input_image(image)
+
+        # 1. Edit the image using Qwen Edit with retry logic for quality
+        image_edited = await self._edit_image_with_retry(
+            image, 
+            request.seed,
+            max_retries=self.settings.edit_max_retries,
+            quality_threshold=self.settings.edit_quality_threshold
+        )
+>>>>>>> fcfbafc (edit-retry-logic)
 
         # 2. Remove background
         image_without_background = self.rmbg.remove_background(image_edited)

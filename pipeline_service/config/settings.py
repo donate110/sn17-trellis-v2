@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     limit_padding: bool = Field(default=True, env="LIMIT_PADDING")
     background_mask_threshold: float = Field(default=0.8, env="BACKGROUND_MASK_THRESHOLD", description="Threshold for background mask (0.0-1.0). Higher = more strict")
 
+    # Image editing robustness settings
+    edit_max_retries: int = Field(default=3, env="EDIT_MAX_RETRIES")
+    edit_quality_threshold: float = Field(default=0.7, env="EDIT_QUALITY_THRESHOLD")
+    enable_image_preprocessing: bool = Field(default=True, env="ENABLE_IMAGE_PREPROCESSING")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
