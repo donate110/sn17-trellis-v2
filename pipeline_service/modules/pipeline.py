@@ -6,7 +6,8 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
+import numpy as np
 import pyspz
 import torch
 import gc
@@ -36,6 +37,11 @@ class GenerationPipeline:
         self.qwen_edit = QwenEditModule(settings)
         self.rmbg = BackgroundRemovalService(settings)
         self.trellis = TrellisService(settings)
+        
+        # Image enhancement settings
+        self.enable_image_enhancement = True
+        self.enhancement_sharpening_factor = 1.2
+        self.enhancement_contrast_factor = 1.1
 
     async def startup(self) -> None:
         """Initialize all pipeline components."""
@@ -258,17 +264,16 @@ class GenerationPipeline:
         if image.width > 4096 or image.height > 4096:
             logger.warning(f"Image very large: {image.width}x{image.height}. This may cause memory issues.")
 
-        # Preprocess input image for better editing quality
-        if self.settings.enable_image_preprocessing:
+        # 0. Enhance image quality before editing (if enabled)
+        if self.enable_image_enhancement:
+            image = self._enhance_image(image)
+        
+        # Preprocess input image for better editing quality (if enabled)
+        if hasattr(self.settings, 'enable_image_preprocessing') and self.settings.enable_image_preprocessing:
             image = preprocess_input_image(image)
 
-        # 1. Edit the image using Qwen Edit with retry logic for quality
-        image_edited = await self._edit_image_with_retry(
-            image, 
-            request.seed,
-            max_retries=self.settings.edit_max_retries,
-            quality_threshold=self.settings.edit_quality_threshold
-        )
+        # 1. Edit the image using Qwen Edit
+        image_edited = self.qwen_edit.edit_image(prompt_image=image, seed=request.seed)
         
         # Validate edited image
         if not image_edited or image_edited.size[0] == 0 or image_edited.size[1] == 0:
@@ -333,4 +338,74 @@ class GenerationPipeline:
             image_without_background_file_base64=image_without_background_base64 if self.settings.send_generated_files else None,
         )
         return response
+
+    def _enhance_image(self, image: Image.Image) -> Image.Image:
+        """
+        Apply image enhancement operations to improve quality before Qwen Edit.
+        
+        Args:
+            image: Input PIL Image
+            
+        Returns:
+            Enhanced PIL Image
+        """
+        try:
+            enhanced = image.copy()
+            
+            # Convert to RGB if needed
+            if enhanced.mode != 'RGB':
+                enhanced = enhanced.convert('RGB')
+            
+            # 1. Exposure correction (auto-adjust brightness)
+            enhanced = self._correct_exposure(enhanced)
+            
+            # 2. Contrast enhancement
+            enhancer = ImageEnhance.Contrast(enhanced)
+            enhanced = enhancer.enhance(self.enhancement_contrast_factor)
+            
+            # 3. Sharpening (should be last)
+            enhanced = enhanced.filter(ImageFilter.UnsharpMask(
+                radius=1,
+                percent=int((self.enhancement_sharpening_factor - 1.0) * 100),
+                threshold=3
+            ))
+            
+            return enhanced
+            
+        except Exception as e:
+            logger.warning(f"Error enhancing image, using original: {e}")
+            return image
+
+    def _correct_exposure(self, image: Image.Image) -> Image.Image:
+        """
+        Auto-correct exposure (brightness) if image is too dark or too bright.
+        
+        Args:
+            image: Input PIL Image
+            
+        Returns:
+            Exposure-corrected PIL Image
+        """
+        try:
+            # Convert to numpy for processing
+            img_array = np.array(image, dtype=np.float32)
+            
+            # Calculate mean brightness
+            mean_brightness = np.mean(img_array)
+            
+            # Target brightness (middle gray)
+            target_brightness = 128.0
+            
+            # Adjust if too dark or too bright
+            if mean_brightness < 100:  # Too dark
+                brightness_factor = target_brightness / mean_brightness
+                img_array = np.clip(img_array * brightness_factor, 0, 255)
+            elif mean_brightness > 180:  # Too bright
+                brightness_factor = target_brightness / mean_brightness
+                img_array = np.clip(img_array * brightness_factor, 0, 255)
+            
+            return Image.fromarray(img_array.astype(np.uint8))
+        except Exception as e:
+            logger.warning(f"Error correcting exposure: {e}")
+            return image
 
