@@ -12,4 +12,3 @@ _logger.add(
 logger = _logger
 
 __all__ = ["logger"]
-

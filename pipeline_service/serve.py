@@ -42,6 +42,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     """
@@ -49,11 +50,12 @@ async def health() -> dict[str, str]:
     """
     return {"status": "ready"}
 
+
 @app.post("/generate_from_base64", response_model=GenerateResponse)
 async def generate_from_base64(request: GenerateRequest) -> GenerateResponse:
     """
     Generate 3D model from base64 encoded image (JSON request).
-    
+
     Returns JSON with generation_time and base64 encoded outputs.
     """
     try:
@@ -66,14 +68,16 @@ async def generate_from_base64(request: GenerateRequest) -> GenerateResponse:
         if isinstance(ply_bytes, str):
             # If it's already a base64 string, decode it first
             ply_bytes = base64.b64decode(ply_bytes)
-        
+
         # compress the ply file if enabled
         if ply_bytes and settings.compression:
             compressed_ply_bytes = pyspz.compress(ply_bytes, workers=1)  # returns bytes
             logger.info(f"Compressed PLY size: {len(compressed_ply_bytes)} bytes")
-        
+
         # Encode to base64 string for JSON response
-        result.ply_file_base64 = base64.b64encode(compressed_ply_bytes if compressed_ply_bytes else ply_bytes).decode("utf-8")
+        result.ply_file_base64 = base64.b64encode(
+            compressed_ply_bytes if compressed_ply_bytes else ply_bytes
+        ).decode("utf-8")
 
         return result
 
@@ -83,7 +87,9 @@ async def generate_from_base64(request: GenerateRequest) -> GenerateResponse:
 
 
 @app.post("/generate")
-async def generate(prompt_image_file: UploadFile = File(...), seed: int = Form(-1)) -> StreamingResponse:
+async def generate(
+    prompt_image_file: UploadFile = File(...), seed: int = Form(-1)
+) -> StreamingResponse:
     """
     Upload image file and generate 3D model as PLY buffer.
     Returns binary PLY file directly.
@@ -95,7 +101,7 @@ async def generate(prompt_image_file: UploadFile = File(...), seed: int = Form(-
         image_bytes = await prompt_image_file.read()
         if not image_bytes or len(image_bytes) == 0:
             raise HTTPException(status_code=400, detail="Empty image file provided")
-        
+
         # Generate PLY from uploaded file
         ply_bytes = await pipeline.generate_from_upload(image_bytes, seed)
 
@@ -106,47 +112,52 @@ async def generate(prompt_image_file: UploadFile = File(...), seed: int = Form(-
         logger.info(f"Task completed. PLY size: {buffer_size} bytes")
 
         # Generate chunks of the ply file
-        async def generate_chunks()->AsyncGenerator[bytes, None]:
+        async def generate_chunks() -> AsyncGenerator[bytes, None]:
             chunk_size = 1024 * 1024  # 1 MB
             while chunk := ply_buffer.read(chunk_size):
                 yield chunk
-     
+
         return StreamingResponse(
             generate_chunks(),
             media_type="application/octet-stream",
-            headers={"Content-Length": str(buffer_size)}
+            headers={"Content-Length": str(buffer_size)},
         )
-        
+
     except Exception as exc:
         logger.exception(f"Error generating from upload: {exc}")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+
 @app.post("/generate-spz")
-async def generate_spz(prompt_image_file: UploadFile = File(...), seed: int = Form(-1)) -> StreamingResponse:
+async def generate_spz(
+    prompt_image_file: UploadFile = File(...), seed: int = Form(-1)
+) -> StreamingResponse:
     """
     Upload image file and generate 3D model as SPZ buffer.
-    
+
     Returns binary SPZ file directly.
     """
     try:
-        logger.info(f"Task received (SPZ). Uploading image: {prompt_image_file.filename}")
-        
+        logger.info(
+            f"Task received (SPZ). Uploading image: {prompt_image_file.filename}"
+        )
+
         # Read and validate uploaded file
         image_bytes = await prompt_image_file.read()
         if not image_bytes or len(image_bytes) == 0:
             raise HTTPException(status_code=400, detail="Empty image file provided")
-        
+
         # Generate PLY from uploaded file
         ply_bytes = await pipeline.generate_from_upload(image_bytes, seed)
 
-        # Compress the ply file 
+        # Compress the ply file
         if ply_bytes:
             # compress the ply file
-            ply_compressed_bytes = pyspz.compress(ply_bytes, workers=1) # return bytes
+            ply_compressed_bytes = pyspz.compress(ply_bytes, workers=1)  # return bytes
             logger.info(f"Task completed. SPZ size: {len(ply_compressed_bytes)} bytes")
 
         return StreamingResponse(
-            BytesIO(ply_compressed_bytes), 
+            BytesIO(ply_compressed_bytes),
             media_type="application/octet-stream",
         )
 
@@ -159,7 +170,7 @@ async def generate_spz(prompt_image_file: UploadFile = File(...), seed: int = Fo
 async def get_setup_info() -> dict:
     """
     Get current pipeline configuration for WandB logging.
-    
+
     Returns:
         dict: Pipeline configuration settings
     """
@@ -179,4 +190,3 @@ if __name__ == "__main__":
         port=settings.port,
         reload=False,
     )
-

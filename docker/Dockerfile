@@ -45,7 +45,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 RUN update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 120 &&  \
-update-alternatives --install /usr/bin/python python /usr/bin/python3 120
+    update-alternatives --install /usr/bin/python python /usr/bin/python3 120
 
 ENV LD_LIBRARY_PATH=/usr/lib64:$LD_LIBRARY_PATH
 

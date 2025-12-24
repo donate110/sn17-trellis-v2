@@ -4,9 +4,9 @@ app_name: 404-base-miner
 containers:
   - name: base-miner
     resource: h200-small
-    image: 
+    image:
     port: 10006
-    command: ["sh","-c"]
+    command: ["sh", "-c"]
     args: ["python serve.py"]
     replicas:
       min: 1
